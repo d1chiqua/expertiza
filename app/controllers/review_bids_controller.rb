@@ -1,46 +1,29 @@
+# frozen_string_literal: true
+
+# The `ReviewBidsController` is responsible for managing the review bidding process
+# for assignments. It handles actions related to displaying review options, setting
+# review priorities, and managing reviews after the bidding process is complete.
 class ReviewBidsController < ApplicationController
-  require 'json'
-  require 'uri'
-  require 'net/http'
-  require 'rest_client'
+  include ActionAuthorizationConcern
+  include AuthorizationHelper
+  include ParticipantServiceConcern
+  include ReviewServiceConcern
 
-  # action allowed function checks the action allowed based on the user working
-  def action_allowed?
-    case params[:action]
-    when 'show', 'set_priority', 'index'
-      ['Instructor',
-       'Teaching Assistant',
-       'Administrator',
-       'Super-Administrator',
-       'Student'].include?(current_role_name) &&
-        ((%w[list].include? action_name) ? are_needed_authorizations_present?(params[:id], 'participant', 'reader', 'submitter', 'reviewer') : true)
-    else
-      ['Instructor',
-       'Teaching Assistant',
-       'Administrator',
-       'Super-Administrator'].include? current_role_name
-    end
-  end
+  before_action :authorize_action
+  before_action :authorize_participant, only: [:index]
 
-  # provides variables for reviewing page located at views/review_bids/others_work.html.erb
+  # Displays the review bid others work page for the current participant
   def index
-    @participant = AssignmentParticipant.find(params[:id])
-    return unless current_user_id?(@participant.user_id)
+    @assignment = participant_service.assignment
+    @review_mappings = review_service.review_mappings
 
-    @assignment = @participant.assignment
-    @review_mappings = ReviewResponseMap.where(reviewer_id: @participant.id)
+    # Get the number of reviews that have been completed
+    @num_reviews_completed = review_service.review_counts[:completed]
 
-    # Finding how many reviews have been completed
-    @num_reviews_completed = 0
-    @review_mappings.each do |map|
-      @num_reviews_completed += 1 if !map.response.empty? && map.response.last.is_submitted
-    end
-
-    # render view for completing reviews after review bidding has been completed
     render 'sign_up_sheet/review_bids_others_work'
   end
 
-  # provides variables for review bidding page
+  # Displays the review bidding page for the current participant
   def show
     @participant = AssignmentParticipant.find(params[:id].to_i)
     @assignment = @participant.assignment
@@ -68,7 +51,7 @@ class ReviewBidsController < ApplicationController
     render 'sign_up_sheet/review_bids_show'
   end
 
-  # function that assigns and updates priorities for review bids
+  # Assigns and updates priorities for review bids
   def set_priority
     if params[:topic].nil?
       ReviewBid.where(participant_id: params[:id]).destroy_all
@@ -92,7 +75,7 @@ class ReviewBidsController < ApplicationController
     redirect_to action: 'show', assignment_id: params[:assignment_id], id: params[:id]
   end
 
-  # assign bidding topics to reviewers
+  # Assigns bidding topics to reviewers
   def assign_bidding
     # sets parameters used for running bidding algorithm
     assignment_id = params[:assignment_id].to_i
@@ -105,10 +88,9 @@ class ReviewBidsController < ApplicationController
     redirect_back fallback_location: root_path
   end
 
-  # call webserver for running assigning algorithm
-  # passing webserver: student_ids, topic_ids, student_preferences, time_stamps
-  # webserver returns:
-  # returns matched assignments as json body
+  # Calls web service to run the bid assignment algorithm
+  # Sends student IDs, topic IDs, student preferences, and timestamps to the web service
+  # The web service returns the matched assignments in the JSON response body
   def run_bidding_algorithm(bidding_data)
     # begin
     url = 'http://app-csc517.herokuapp.com/match_topics' # hard coding for the time being
@@ -117,5 +99,30 @@ class ReviewBidsController < ApplicationController
   rescue StandardError
     false
     # end
+  end
+
+  private
+
+  def actions_requiring_authorization
+    %w[list]
+  end
+
+  def actions_allowed_for_students_and_above
+    %w[show set_priority index]
+  end
+
+  def actions_restricted_to_tas_and_above
+    %w[assign_bidding run_bidding_algorithm]
+  end
+
+  def required_authorizations_for_allowed_actions
+    %w[participant reader submitter reviewer]
+  end
+
+  def verify_authorizations
+    return false unless current_user_has_student_privileges?
+    return false unless are_needed_authorizations_present?(params[:id], *required_authorizations_for_allowed_actions)
+
+    true
   end
 end
