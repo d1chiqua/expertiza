@@ -116,6 +116,32 @@ describe ReviewBidsController do
     end
   end
 
+  RSpec.describe BiddingService do
+    let(:assignment) { create(:assignment) }
+    let(:topics) { create_list(:sign_up_topic, 5, assignment: assignment) }
+    let(:participants) { create_list(:assignment_participant, 10, parent: assignment) }
+  
+    before do
+      participants.each { |participant| create(:team, participants: [participant], parent: assignment) }
+    end
+  
+    it 'assigns topics to bidders first and then non-bidders' do
+      # Simulate bids from some participants
+      participants.first(3).each_with_index do |participant, i|
+        create(:bid, team: participant.team, topic: topics[i], priority: 1)
+      end
+  
+      BiddingService.new.process_bidding(assignment.id)
+  
+      # Ensure bidders are assigned based on priority
+      expect(topics.first(3).map(&:team)).to match_array(participants.first(3).map(&:team))
+  
+      # Ensure non-bidders receive remaining topics
+      expect(topics.last(2).map(&:team)).to match_array(participants.last(7).map(&:team))
+    end
+  end
+  
+
   describe '#run_bidding_algorithm' do
     render_views
     it 'connects to the webservice to run bidding algorithm' do

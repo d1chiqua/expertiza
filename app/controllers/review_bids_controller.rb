@@ -88,6 +88,70 @@ class ReviewBidsController < ApplicationController
     redirect_back fallback_location: root_path
   end
 
+  def process_bidding(assignment_id)
+    # Retrieve all participants for the assignment
+    participants = AssignmentParticipant.where(parent_id: assignment_id)
+  
+    # Retrieve all topics for the assignment
+    topics = SignUpTopic.where(assignment_id: assignment_id).to_a
+  
+    # Process bids for all teams that have placed bids
+    participants_with_bids = []
+    topics.each do |topic|
+      # Get the bids for the current topic, ordered by priority
+      bids = Bid.where(topic_id: topic.id).order(:priority)
+  
+      # Assign the topic to the highest-priority bidder that hasn't been assigned
+      bids.each do |bid|
+        team = Team.find(bid.team_id)
+  
+        # Check if the team is already assigned to a topic
+        next if team_has_topic?(team)
+  
+        assign_topic_to_team(topic, team)
+        participants_with_bids += team.participants
+        break # Topic assigned, move to the next topic
+      end
+    end
+  
+    # Identify non-bidders (participants who did not place any bids)
+    non_bidders = participants - participants_with_bids
+  
+    # Assign leftover topics to non-bidders
+    assign_leftover_topics_to_non_bidders(non_bidders, topics)
+  end
+  
+  def assign_leftover_topics_to_non_bidders(non_bidders, topics)
+    # Collect topics that haven't been assigned
+    unassigned_topics = topics.reject { |topic| topic.assigned? }
+  
+    # Assign unassigned topics to non-bidders
+    non_bidders.each_with_index do |participant, index|
+      next if unassigned_topics.empty?
+  
+      # Assign a topic to the non-bidder
+      topic = unassigned_topics.shift # Take the first available topic
+      team = participant.team || create_team_for_participant(participant)
+      assign_topic_to_team(topic, team)
+    end
+  end
+  
+  def assign_topic_to_team(topic, team)
+    SignedUpTeam.create(topic_id: topic.id, team_id: team.id, is_waitlisted: 0)
+    topic.update(assigned: true)
+  end
+  
+  def team_has_topic?(team)
+    SignedUpTeam.exists?(team_id: team.id, is_waitlisted: 0)
+  end
+  
+  def create_team_for_participant(participant)
+    # Lazy initialization of a single-person team
+    SignUpSheet.signup_team(participant.assignment_id, participant.user_id)
+    participant.team
+  end
+  
+
   # Calls web service to run the bid assignment algorithm
   # Sends student IDs, topic IDs, student preferences, and timestamps to the web service
   # The web service returns the matched assignments in the JSON response body
